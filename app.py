@@ -58,8 +58,43 @@ KOLOM_DISPLAY = ["ZONA", "LOKASI", "PLU", "NAMA", "FRAC", "UNIT", "QTY_IN_STORAG
 KOLOM_STORAGE = ["ZONA", "LOKASI", "PLU", "NAMA", "QTY", "TGL_EXP"]
 display_terisi = display[display["PLU"].notna()]
 
-st.title("Monitoring Picking DPD")
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Cari Item", "Lihat per LINE", "Ringkasan", "Monitoring Picking", "Layout 3D"])
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap');
+.stApp { font-family: 'Barlow', sans-serif; }
+.block-container, [data-testid="stMainBlockContainer"] { padding-top: 5rem !important; max-width: 1250px; }
+.hero { background: #12337a; color: #fff; padding: 18px 24px 16px; border-bottom: 5px solid #d62828;
+        border-radius: 6px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.hero-title { font-family: 'Barlow Condensed', sans-serif; font-size: 2.3rem; font-weight: 700; line-height: 1.05; margin: 0; }
+.hero-sub { opacity: .88; margin-top: 6px; font-size: 1rem; }
+.hero-badge { background: #f2b705; color: #1a1a1a; padding: 3px 10px; border-radius: 4px; font-weight: 600; font-size: .85rem; white-space: nowrap; }
+div[data-testid="stMetric"] { background: rgba(128,128,128,.09); border-left: 4px solid #3b6fe0; padding: 12px 16px; border-radius: 6px; }
+div[data-testid="stMetricValue"] { font-family: 'Barlow Condensed', sans-serif; font-size: 2.2rem; font-weight: 700; }
+button[data-baseweb="tab"] p { font-size: 1rem; font-weight: 600; }
+</style>
+<div class="hero">
+  <div>
+    <div class="hero-title">Monitoring Picking DC</div>
+    <div class="hero-sub">Waktu picking per DPD terhadap target 1 menit 45 detik, per zona dan per hari</div>
+  </div>
+  <div class="hero-badge">Data contoh</div>
+</div>
+""", unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("### Tentang dashboard")
+    st.write("Prototipe untuk memantau KPI waktu picking tanpa turun ke lapangan.")
+    st.markdown("**Sumber data saat ini**")
+    st.write("Planogram asli, sedangkan waktu dan picker masih data contoh.")
+    st.markdown("**Rencana pengembangan**")
+    st.write("1. Sinkron real-time ke server DPD")
+    st.write("2. Riwayat picking dari database")
+    st.write("3. Login dan hak akses per peran")
+    st.write("4. Notifikasi saat zona lewat target")
+
+tab4, tab6, tab5, tab1, tab2, tab3 = st.tabs(
+    ["Monitoring Hari Ini", "Riwayat dan Tren", "Layout 3D", "Cari Item", "Lihat per LINE", "Ringkasan"]
+)
 
 # ---------- TAB 1: cari item ----------
 with tab1:
@@ -304,3 +339,97 @@ with tab5:
                    camera=dict(eye=dict(x=0.0, y=-1.4, z=1.1))),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+# ---------- TAB 6: riwayat dan tren (data contoh) ----------
+@st.cache_data
+def buat_riwayat_contoh(hari=60):
+    rng = np.random.default_rng(7)
+    zona_aktif = sorted(z for z in display_terisi["ZONA"].unique() if z not in ("Belum dipetakan", "Zona 00"))
+    selisih = {z: rng.normal(0, 9) for z in zona_aktif}  # tiap zona punya karakter sendiri
+    akhir = datetime.now().date()
+    baris = []
+    for i in range(hari):
+        tgl = pd.Timestamp(akhir - timedelta(days=hari - 1 - i))
+        faktor = 0.6 if tgl.weekday() >= 5 else 1.0
+        toko = int(rng.normal(245, 12) * faktor)
+        dasar = 114 - i * 0.28  # contoh: performa membaik pelan-pelan
+        for z in zona_aktif:
+            dpd = int(toko * rng.uniform(0.4, 0.75))
+            rata = float(np.clip(rng.normal(dasar + selisih[z], 4), 60, 200))
+            ok = float(np.clip(100 - (rata - 85) * 2.1 + rng.normal(0, 3), 30, 99))
+            baris.append((tgl, z, toko, dpd, rata, ok, int(dpd * rng.normal(32, 3))))
+    return pd.DataFrame(baris, columns=["TANGGAL", "ZONA", "TOKO", "DPD", "RATA", "TERCAPAI", "QTY"])
+
+
+def rapikan(fig, tinggi=330):
+    fig.update_layout(height=tinggi, margin=dict(l=10, r=10, t=10, b=10), font=dict(family="Barlow, sans-serif"))
+    return fig
+
+
+with tab6:
+    if go is None:
+        st.error("Library plotly belum terinstall (cek requirements.txt).")
+        st.stop()
+    st.caption("Data contoh 60 hari. Nanti diganti riwayat dari database picking.")
+    rentang = st.radio("Periode", [7, 14, 30], index=1, horizontal=True, format_func=lambda n: f"{n} hari terakhir")
+
+    riw = buat_riwayat_contoh()
+    riw["W_RATA"] = riw["RATA"] * riw["DPD"]
+    riw["W_OK"] = riw["TERCAPAI"] * riw["DPD"]
+    harian = riw.groupby("TANGGAL").agg(
+        TOKO=("TOKO", "first"), DPD=("DPD", "sum"), QTY=("QTY", "sum"), W_RATA=("W_RATA", "sum"), W_OK=("W_OK", "sum"))
+    harian["RATA"] = harian["W_RATA"] / harian["DPD"]
+    harian["TERCAPAI"] = harian["W_OK"] / harian["DPD"]
+    cur, prev = harian.tail(rentang), harian.iloc[-2 * rentang:-rentang]
+
+    def rata_berbobot(d):
+        return d["W_RATA"].sum() / d["DPD"].sum()
+
+    def ok_berbobot(d):
+        return d["W_OK"].sum() / d["DPD"].sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rata-rata waktu per DPD", fmt(rata_berbobot(cur)),
+              f"{rata_berbobot(cur) - rata_berbobot(prev):+.0f} dtk dari periode lalu", delta_color="inverse")
+    c2.metric("DPD tercapai target", f"{ok_berbobot(cur):.0f}%", f"{ok_berbobot(cur) - ok_berbobot(prev):+.1f} poin dari periode lalu")
+    c3.metric("Toko per hari", f"{cur['TOKO'].mean():.0f}", f"target {TARGET_TOKO}", delta_color="off")
+    c4.metric("Total qty item", f"{cur['QTY'].sum():,}", f"{(cur['QTY'].sum() / prev['QTY'].sum() - 1) * 100:+.1f}% dari periode lalu")
+
+    st.subheader("Perkembangan waktu picking")
+    f1 = go.Figure(go.Scatter(x=cur.index, y=cur["RATA"], mode="lines+markers", name="Rata-rata waktu",
+                              line=dict(color="#3b6fe0", width=3), hovertemplate="%{x|%d %b}: %{y:.0f} detik<extra></extra>"))
+    f1.add_hline(y=TARGET_DETIK, line_dash="dash", line_color="#d62828", annotation_text="Target 1:45", annotation_position="top left")
+    f1.update_yaxes(title="detik per DPD")
+    st.plotly_chart(rapikan(f1), use_container_width=True)
+
+    k1, k2 = st.columns(2)
+    with k1:
+        st.subheader("DPD tercapai target (%)")
+        f2 = go.Figure(go.Bar(x=cur.index, y=cur["TERCAPAI"], marker_color="#2e9e5b",
+                              hovertemplate="%{x|%d %b}: %{y:.0f}%<extra></extra>"))
+        f2.update_yaxes(range=[0, 100])
+        st.plotly_chart(rapikan(f2, 280), use_container_width=True)
+    with k2:
+        st.subheader("Toko terlayani per hari")
+        f3 = go.Figure(go.Bar(x=cur.index, y=cur["TOKO"], marker_color="#3b6fe0",
+                              hovertemplate="%{x|%d %b}: %{y} toko<extra></extra>"))
+        f3.add_hline(y=TARGET_TOKO, line_dash="dash", line_color="#d62828", annotation_text="Target 250")
+        st.plotly_chart(rapikan(f3, 280), use_container_width=True)
+
+    st.subheader("Peta panas waktu picking: zona per hari")
+    st.caption("Hijau lebih cepat dari target 1:45, merah lebih lambat.")
+    pv = riw[riw["TANGGAL"].isin(cur.index)].pivot(index="ZONA", columns="TANGGAL", values="RATA")
+    f4 = go.Figure(go.Heatmap(z=pv.values, x=pv.columns, y=pv.index, zmid=TARGET_DETIK,
+                              colorscale=[[0, "#2e9e5b"], [0.5, "#f3f0e8"], [1, "#d62828"]],
+                              colorbar=dict(title="detik"), hovertemplate="%{y}, %{x|%d %b}: %{z:.0f} detik<extra></extra>"))
+    f4.update_yaxes(autorange="reversed")
+    st.plotly_chart(rapikan(f4, 420), use_container_width=True)
+
+    st.subheader("Peringkat zona pada periode ini")
+    pz = riw[riw["TANGGAL"].isin(cur.index)].groupby("ZONA").agg(DPD=("DPD", "sum"), W_RATA=("W_RATA", "sum"), W_OK=("W_OK", "sum"))
+    pz["Rata-rata waktu"] = (pz["W_RATA"] / pz["DPD"]).map(fmt)
+    pz["Tercapai"] = (pz["W_OK"] / pz["DPD"]).round(0).astype(int).astype(str) + "%"
+    pz["Status"] = np.where(pz["W_RATA"] / pz["DPD"] <= TARGET_DETIK, "OK", "Lewat target")
+    st.dataframe(pz.assign(_u=pz["W_RATA"] / pz["DPD"]).sort_values("_u", ascending=False)[["DPD", "Rata-rata waktu", "Tercapai", "Status"]],
+                 use_container_width=True)
