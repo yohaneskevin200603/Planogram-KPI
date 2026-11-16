@@ -9,7 +9,7 @@ try:
 except ImportError:
     go = None
 
-st.set_page_config(page_title="Monitoring Picking DPD", layout="wide")
+st.set_page_config(page_title="Monitoring Picking DPD", layout="wide", initial_sidebar_state="collapsed")
 
 FILE_DISPLAY = "Planogram_Display.csv"
 FILE_STORAGE = "Planogram_Storage.csv"
@@ -71,6 +71,15 @@ st.markdown("""
 div[data-testid="stMetric"] { background: rgba(128,128,128,.09); border-left: 4px solid #3b6fe0; padding: 12px 16px; border-radius: 6px; }
 div[data-testid="stMetricValue"] { font-family: 'Barlow Condensed', sans-serif; font-size: 2.2rem; font-weight: 700; }
 button[data-baseweb="tab"] p { font-size: 1rem; font-weight: 600; }
+@media (max-width: 640px) {
+  .block-container, [data-testid="stMainBlockContainer"] { padding-left: .9rem !important; padding-right: .9rem !important; padding-top: 4.2rem !important; }
+  .hero { flex-direction: column; padding: 14px 16px 12px; }
+  .hero-title { font-size: 1.7rem; }
+  .hero-sub { font-size: .9rem; }
+  div[data-testid="stMetricValue"] { font-size: 1.8rem; }
+  button[data-baseweb="tab"] p { font-size: .9rem; }
+  h2, h3 { font-size: 1.25rem !important; }
+}
 </style>
 <div class="hero">
   <div>
@@ -92,8 +101,8 @@ with st.sidebar:
     st.write("3. Login dan hak akses per peran")
     st.write("4. Notifikasi saat zona lewat target")
 
-tab4, tab6, tab5, tab1, tab2, tab3 = st.tabs(
-    ["Monitoring Hari Ini", "Riwayat dan Tren", "Layout 3D", "Cari Item", "Lihat per LINE", "Ringkasan"]
+tab4, tab6, tab5, tab7, tab1, tab2, tab3 = st.tabs(
+    ["Monitoring Hari Ini", "Riwayat dan Tren", "Layout 3D", "Jalan Keliling 3D", "Cari Item", "Lihat per LINE", "Ringkasan"]
 )
 
 # ---------- TAB 1: cari item ----------
@@ -334,7 +343,7 @@ with tab5:
                 text=[label], textfont=dict(size=14, color="white"), hoverinfo="skip", showlegend=False,
             ))
     fig.update_layout(
-        height=650, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        height=520, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
         scene=dict(aspectmode="data", xaxis_visible=False, yaxis_visible=False, zaxis_visible=False,
                    camera=dict(eye=dict(x=0.0, y=-1.4, z=1.1))),
     )
@@ -433,3 +442,168 @@ with tab6:
     pz["Status"] = np.where(pz["W_RATA"] / pz["DPD"] <= TARGET_DETIK, "OK", "Lewat target")
     st.dataframe(pz.assign(_u=pz["W_RATA"] / pz["DPD"]).sort_values("_u", ascending=False)[["DPD", "Rata-rata waktu", "Tercapai", "Status"]],
                  use_container_width=True)
+
+
+# ---------- TAB 7: jalan keliling gudang (prototipe konsep, Three.js) ----------
+HTML_WALK = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#dfe6ee;font-family:Arial,sans-serif;touch-action:none}
+#c{display:block;width:100%;height:100%}
+.hud{position:absolute;color:#fff;background:rgba(18,51,122,.88);padding:6px 10px;border-radius:6px;font-size:13px}
+#zona{top:10px;left:10px;font-weight:bold}
+#jump{top:10px;right:10px}
+#hint{bottom:10px;left:10px;max-width:46%;font-size:12px}
+#mini{position:absolute;right:10px;bottom:10px;border:2px solid #12337a;background:rgba(255,255,255,.75);border-radius:4px}
+#joy{position:absolute;left:18px;bottom:18px;width:110px;height:110px;border-radius:50%;background:rgba(18,51,122,.22);border:2px solid rgba(18,51,122,.5);display:none}
+#knob{position:absolute;left:35px;top:35px;width:40px;height:40px;border-radius:50%;background:rgba(18,51,122,.85)}
+@media (pointer:coarse){#hint{left:145px;max-width:34%}}
+</style></head><body>
+<canvas id="c" tabindex="0"></canvas>
+<div class="hud" id="zona">Zona: -</div>
+<select class="hud" id="jump"></select>
+<canvas id="mini" width="170" height="137"></canvas>
+<div id="joy"><div id="knob"></div></div>
+<div class="hud" id="hint">Klik gambar, seret mouse untuk melihat sekeliling, tombol W A S D untuk berjalan (Shift = lari)</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+if(!window.THREE){document.body.innerHTML='<p style="padding:20px">Three.js gagal dimuat. Cek koneksi internet.</p>';}
+else{
+const D=__DATA__, W=140, HD=113, LV=9, LH=1.2, RH=LV*LH, CART=[0xc89b6a,0xb98652,0xd8b88a];
+const cv=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0xdfe6ee); scene.fog=new THREE.Fog(0xdfe6ee,50,230);
+const cam=new THREE.PerspectiveCamera(70,1,0.1,400); cam.rotation.order='YXZ';
+scene.add(new THREE.HemisphereLight(0xffffff,0x8899aa,1.0));
+const sun=new THREE.DirectionalLight(0xffffff,0.5); sun.position.set(40,100,30); scene.add(sun);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(W,HD),new THREE.MeshLambertMaterial({color:0xc9ced6}));
+floor.rotation.x=-Math.PI/2; floor.position.set(W/2,0,HD/2); scene.add(floor);
+
+const B={post:[],red:[],green:[],carton:[]}, solids=[];
+const add=(l,x,y,z,sx,sy,sz,c)=>l.push([x,y,z,sx,sy,sz,c]);
+function label(txt,sub,color,x,y,z){
+  const c=document.createElement('canvas'); c.width=512; c.height=160; const g=c.getContext('2d');
+  g.fillStyle='rgba(18,51,122,.92)'; g.fillRect(0,0,512,160); g.fillStyle=color; g.fillRect(0,0,16,160);
+  g.fillStyle='#fff'; g.font='bold 64px Arial'; g.fillText(txt,34,76); g.font='34px Arial'; g.fillText(sub,34,126);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c)})); s.scale.set(11,3.4,1); s.position.set(x,y,z); scene.add(s);
+}
+D.forEach((zn,zi)=>{
+  zn.rects.forEach((r,ri)=>{
+    const x0=r[0],x1=r[1],z0=r[2],z1=r[3],w=x1-x0,d=z1-z0;
+    const p=new THREE.Mesh(new THREE.PlaneGeometry(w,d),new THREE.MeshLambertMaterial({color:zn.warna,transparent:true,opacity:.55}));
+    p.rotation.x=-Math.PI/2; p.position.set((x0+x1)/2,0.02,(z0+z1)/2); scene.add(p);
+    const aZ=w<=40, n=Math.max(1,Math.round(zn.n/zn.rects.length));
+    const s0=aZ?x0:z0, s1=aZ?x1:z1, l0=aZ?z0:x0, l1=aZ?z1:x1;
+    const rw=Math.min(1.2,(s1-s0)/n*0.6), len=l1-l0, bays=Math.max(1,Math.round(len/8)), bl=len/bays;
+    for(let i=0;i<n;i++){
+      const c=s0+(i+.5)*(s1-s0)/n;
+      solids.push(aZ?[c-rw/2,c+rw/2,l0,l1]:[l0,l1,c-rw/2,c+rw/2]);
+      for(let b=0;b<=bays;b++) for(const e of [-1,1]){
+        const l=l0+b*bl, s=c+e*rw/2; add(B.post, aZ?s:l, RH/2, aZ?l:s, 0.14,RH,0.14, 0);
+      }
+      for(let k=1;k<=LV;k++){
+        const y=k*LH, list=(k<=zn.stor)?B.red:B.green, m=(l0+l1)/2;
+        for(const e of [-1,1]){ const s=c+e*rw/2; add(list, aZ?s:m, y, aZ?m:s, aZ?0.1:len, 0.16, aZ?len:0.1, 0); }
+        for(let b=0;b<bays;b++) if(Math.random()<0.75){
+          const l=l0+(b+.5)*bl;
+          add(B.carton, aZ?c:l, (k-1)*LH+0.55, aZ?l:c, aZ?rw*.85:bl*.8, 0.85, aZ?bl*.8:rw*.85, CART[(Math.random()*3)|0]);
+        }
+      }
+    }
+    if(ri===0) label(zn.nama.toUpperCase(), zn.jenis, zn.warna, (x0+x1)/2, RH+3, (z0+z1)/2);
+  });
+});
+const bg=new THREE.BoxGeometry(1,1,1);
+function inst(list,color){
+  if(!list.length) return;
+  const m=new THREE.InstancedMesh(bg,new THREE.MeshLambertMaterial({color:0xffffff}),list.length);
+  const M=new THREE.Matrix4(), q=new THREE.Quaternion(), col=new THREE.Color();
+  list.forEach((a,i)=>{ M.compose(new THREE.Vector3(a[0],a[1],a[2]),q,new THREE.Vector3(a[3],a[4],a[5])); m.setMatrixAt(i,M); col.set(color===null?a[6]:color); m.setColorAt(i,col); });
+  scene.add(m);
+}
+inst(B.post,0x1f4fd8); inst(B.red,0xd62828); inst(B.green,0x00a844); inst(B.carton,null);
+
+// pemain dan tabrakan
+const P={x:112,z:73,yaw:Math.PI/2,pitch:0}, R=0.45;
+const hit=(x,z)=>{ for(const s of solids) if(x>s[0]-R&&x<s[1]+R&&z>s[2]-R&&z<s[3]+R) return true; return x<1||x>W-1||z<1||z>HD-1; };
+const unstick=()=>{ let n=0; while(hit(P.x,P.z)&&n++<80) P.z+=0.5; };
+function jump(zn){
+  const r=zn.rects[0], cx=(r[0]+r[1])/2, cz=(r[2]+r[3])/2;
+  if(r[2]>=75){P.x=cx;P.z=73;P.yaw=Math.PI;}
+  else if(r[2]>=46&&r[3]<=70){P.x=cx;P.z=73;P.yaw=0;}
+  else if(r[1]<=31){P.x=24;P.z=cz;P.yaw=-Math.PI/2;}
+  else{P.x=135;P.z=cz;P.yaw=Math.PI/2;}
+  P.pitch=0; unstick();
+}
+const sel=document.getElementById('jump');
+sel.innerHTML='<option value="">Lompat ke zona...</option>'+D.map((z,i)=>'<option value="'+i+'">'+z.nama+' - '+z.jenis+'</option>').join('');
+sel.onchange=()=>{ if(sel.value!==''){ jump(D[+sel.value]); sel.value=''; cv.focus(); } };
+
+// kontrol
+const keys={}; addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;}); addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+const clampP=v=>Math.max(-1.2,Math.min(1.2,v));
+let drag=false,lx=0,ly=0;
+cv.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;cv.focus();});
+addEventListener('mouseup',()=>{drag=false;});
+addEventListener('mousemove',e=>{ if(!drag) return; P.yaw+=(e.clientX-lx)*0.005; P.pitch=clampP(P.pitch+(e.clientY-ly)*0.005); lx=e.clientX; ly=e.clientY; });
+const joy=document.getElementById('joy'), knob=document.getElementById('knob');
+if(matchMedia('(pointer:coarse)').matches) joy.style.display='block';
+let jt=null,lt=null,jc=[0,0],jv=[0,0];
+cv.addEventListener('touchstart',e=>{ for(const t of e.changedTouches){
+  if(t.clientX<innerWidth*0.4&&jt===null){jt=t.identifier;jc=[t.clientX,t.clientY];}
+  else if(lt===null){lt=t.identifier;lx=t.clientX;ly=t.clientY;} } e.preventDefault(); },{passive:false});
+cv.addEventListener('touchmove',e=>{ for(const t of e.changedTouches){
+  if(t.identifier===jt){ let dx=(t.clientX-jc[0])/45, dy=(t.clientY-jc[1])/45; const m=Math.hypot(dx,dy); if(m>1){dx/=m;dy/=m;} jv=[dx,dy]; knob.style.transform='translate('+(dx*30)+'px,'+(dy*30)+'px)'; }
+  else if(t.identifier===lt){ P.yaw+=(t.clientX-lx)*0.006; P.pitch=clampP(P.pitch+(t.clientY-ly)*0.006); lx=t.clientX; ly=t.clientY; } } e.preventDefault(); },{passive:false});
+cv.addEventListener('touchend',e=>{ for(const t of e.changedTouches){
+  if(t.identifier===jt){jt=null;jv=[0,0];knob.style.transform='';} if(t.identifier===lt) lt=null; } });
+
+function step(dt){
+  let f=0,s=0;
+  if(keys['w']||keys['arrowup']) f+=1; if(keys['s']||keys['arrowdown']) f-=1;
+  if(keys['d']) s+=1; if(keys['a']) s-=1;
+  if(keys['arrowleft']) P.yaw+=1.6*dt; if(keys['arrowright']) P.yaw-=1.6*dt;
+  f+=-jv[1]; s+=jv[0];
+  const sp=(keys['shift']?12:6)*dt, fx=-Math.sin(P.yaw), fz=-Math.cos(P.yaw), rx=Math.cos(P.yaw), rz=-Math.sin(P.yaw);
+  const dx=(fx*f+rx*s)*sp, dz=(fz*f+rz*s)*sp;
+  if(!hit(P.x+dx,P.z)) P.x+=dx; if(!hit(P.x,P.z+dz)) P.z+=dz;
+}
+const mini=document.getElementById('mini'), mg=mini.getContext('2d'), zonaEl=document.getElementById('zona');
+function hud(){
+  const k=mini.width/W; mg.clearRect(0,0,mini.width,mini.height);
+  D.forEach(z=>{ mg.fillStyle=z.warna; z.rects.forEach(r=>mg.fillRect(r[0]*k,r[2]*k,(r[1]-r[0])*k,(r[3]-r[2])*k)); });
+  mg.fillStyle='#000'; mg.beginPath(); mg.arc(P.x*k,P.z*k,3.5,0,7); mg.fill();
+  mg.strokeStyle='#000'; mg.lineWidth=2; mg.beginPath(); mg.moveTo(P.x*k,P.z*k); mg.lineTo((P.x-Math.sin(P.yaw)*7)*k,(P.z-Math.cos(P.yaw)*7)*k); mg.stroke();
+  let nm='Lorong / area umum';
+  D.forEach(z=>z.rects.forEach(r=>{ if(P.x>=r[0]-1&&P.x<=r[1]+1&&P.z>=r[2]-1&&P.z<=r[3]+1) nm=z.nama+': '+z.jenis; }));
+  zonaEl.textContent=nm;
+}
+function resize(){ renderer.setSize(innerWidth,innerHeight,false); cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix(); }
+addEventListener('resize',resize); resize();
+let last=performance.now();
+(function loop(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now; step(dt);
+  cam.position.set(P.x,1.6,P.z); cam.rotation.y=P.yaw; cam.rotation.x=P.pitch;
+  renderer.render(scene,cam); hud(); requestAnimationFrame(loop);
+})(last);
+}
+</script></body></html>"""
+
+with tab7:
+    import json
+    import streamlit.components.v1 as components
+
+    st.caption("Prototipe konsep: jalan keliling gudang seperti game. Laptop: klik gambar, seret mouse untuk melihat sekeliling, "
+               "tombol W A S D untuk berjalan. HP: joystick di kiri bawah untuk berjalan, geser jari di sisi kanan untuk melihat. "
+               "Pakai menu di kanan atas untuk lompat ke zona.")
+    jml_line_w = display.groupby("ZONA")["LINE"].nunique()
+    data_zona = []
+    for nama, kotak in DENAH.items():
+        data_zona.append({
+            "nama": nama, "jenis": JENIS_ZONA.get(nama, "Rak kosong"), "warna": WARNA_ZONA.get(nama, "#777777"),
+            "rects": [[a / 10, b / 10, c / 10, d / 10] for a, b, c, d in kotak],
+            "n": int(jml_line_w.get(nama, 4)),
+            "stor": 9 if nama == "Rak kosong" else (3 if nama == "Zona 06" else 2),
+        })
+    components.html(HTML_WALK.replace("__DATA__", json.dumps(data_zona)), height=620)
