@@ -101,8 +101,8 @@ with st.sidebar:
     st.write("3. Login dan hak akses per peran")
     st.write("4. Notifikasi saat zona lewat target")
 
-tab4, tab6, tab5, tab7, tab1, tab2, tab3 = st.tabs(
-    ["Monitoring Hari Ini", "Riwayat dan Tren", "Layout 3D", "Jalan Keliling 3D", "Cari Item", "Lihat per LINE", "Ringkasan"]
+tab8, tab4, tab6, tab5, tab7, tab1, tab2, tab3 = st.tabs(
+    ["Performance WH", "Monitoring Hari Ini", "Riwayat dan Tren", "Layout 3D", "Jalan Keliling 3D", "Cari Item", "Lihat per LINE", "Ringkasan"]
 )
 
 # ---------- TAB 1: cari item ----------
@@ -268,86 +268,161 @@ def kotak_3d(x0, x1, y0, y1, h, warna, teks, op=1.0):
     )
 
 
-def rangka_rak(x0, x1, ya, yb, h, level, n, n_stor):
-    """Gambar n baris rak: tiang biru, balok merah (tingkat storage, bawah) dan balok hijau (tingkat display, atas)."""
-    y0, y1 = min(ya, yb), max(ya, yb)
-    sejajar_y = (x1 - x0) <= 40  # rak memanjang ke arah y kalau kotaknya sempit
-    s0, s1, l0, l1 = (x0, x1, y0, y1) if sejajar_y else (y0, y1, x0, x1)
-    w = min(1.2, (s1 - s0) / n * 0.6)
-    pusat = [s0 + (i + 0.5) * (s1 - s0) / n for i in range(n)]
-    tiang_l = np.linspace(l0, l1, max(2, int((l1 - l0) / 8) + 1))
+@st.cache_data
+def hitung_occupancy(display_df, storage_df):
+    """Untuk tiap LINE, hitung struktur asli (RAK=kedalaman, SHELF=tinggi, CELL=lebar) dan
+    daftar slot yang benar-benar terisi (ada PLU) dari kedua file CSV, dipisah storage vs display."""
+    hasil = {}
+    for ln in sorted(set(display_df["LINE"]) | set(storage_df["LINE"])):
+        d = display_df[display_df["LINE"] == ln]
+        s = storage_df[storage_df["LINE"] == ln]
+        rak_max = int(max([d["RAK"].max() if len(d) else 0, s["RAK"].max() if len(s) else 0, 1]))
+        shelf_max = int(max([d["SHELF"].max() if len(d) else 0, s["SHELF"].max() if len(s) else 0, 1]))
+        storage_tier = int(s["SHELF"].max()) if len(s) and s["SHELF"].notna().any() else 2
+        cell_max = int(max([d["CELL"].max() if len(d) else 0, s["CELL"].max() if len(s) else 0, 1]))
+        occ_s = list(s.loc[s["PLU"].notna(), ["RAK", "SHELF", "CELL"]].itertuples(index=False, name=None))
+        occ_d = list(d.loc[d["PLU"].notna(), ["RAK", "SHELF", "CELL"]].itertuples(index=False, name=None))
+        hasil[ln] = dict(rak_max=max(rak_max, 1), shelf_max=max(shelf_max, 1), storage_tier=max(storage_tier, 1),
+                          cell_max=max(cell_max, 1), occ_storage=occ_s, occ_display=occ_d)
+    return hasil
+
+
+def buat_batch_kotak():
+    return {"x": [], "y": [], "z": [], "i": [], "j": [], "k": [], "facecolor": [], "n": 0}
+
+
+_FACES = [(0, 1, 2), (0, 2, 3), (4, 5, 6), (4, 6, 7), (0, 1, 5), (0, 5, 4),
+          (1, 2, 6), (1, 6, 5), (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)]
+
+
+def tambah_kotak_batch(batch, x0, x1, y0, y1, z0, z1, warna):
+    base = batch["n"]
+    batch["x"] += [x0, x1, x1, x0, x0, x1, x1, x0]
+    batch["y"] += [y0, y0, y1, y1, y0, y0, y1, y1]
+    batch["z"] += [z0, z0, z0, z0, z1, z1, z1, z1]
+    for f in _FACES:
+        batch["i"].append(base + f[0]); batch["j"].append(base + f[1]); batch["k"].append(base + f[2])
+        batch["facecolor"].append(warna)
+    batch["n"] += 8
+
+
+def mesh_dari_batch(batch):
+    if batch["n"] == 0:
+        return None
+    return go.Mesh3d(x=batch["x"], y=batch["y"], z=batch["z"], i=batch["i"], j=batch["j"], k=batch["k"],
+                      facecolor=batch["facecolor"], flatshading=True, hoverinfo="skip", showlegend=False)
+
+
+def gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, info_tiang, occ):
+    """Gambar satu baris rak (satu LINE) sedetail mungkin: kedalaman=RAK, tinggi=SHELF, lebar=CELL (dengan jarak)."""
+    rak_max, shelf_max, storage_tier, cell_max = occ["rak_max"], occ["shelf_max"], occ["storage_tier"], occ["cell_max"]
+    bay_pitch = (l1 - l0) / rak_max
+    slot_pitch = w / cell_max
 
     def xy(s, l):
-        return (s, l) if sejajar_y else (l, s)
+        return (s, l) if aZ else (l, s)
 
-    merah = ([], [], [])
-    hijau = ([], [], [])
-    tx, ty, tz = [], [], []
-    for c in pusat:
-        for e in (c - w / 2, c + w / 2):
-            for k in range(1, level + 1):  # tingkat 1 = paling bawah
-                tujuan = merah if k <= n_stor else hijau
-                for l in (l0, l1):
-                    x, y = xy(e, l)
-                    tujuan[0].append(x); tujuan[1].append(y); tujuan[2].append(h * k / level)
-                for arah in tujuan:
-                    arah.append(None)
-            for l in tiang_l:
-                x, y = xy(e, l)
-                tx += [x, x, None]; ty += [y, y, None]; tz += [0, h, None]
+    # rangka tiang di tiap batas bay, supaya terlihat jelas slot yang masih kosong
+    tiang_l = np.linspace(l0, l1, rak_max + 1)
+    for tepi in (c - w / 2, c + w / 2):
+        for l in tiang_l:
+            x, y = xy(tepi, l)
+            frame_x += [x, x, None]; frame_y += [y, y, None]; frame_z += [0, h_tier * 9, None]
 
-    def garis(data, warna, lebar):
-        return go.Scatter3d(x=data[0], y=data[1], z=data[2], mode="lines",
-                            line=dict(color=warna, width=lebar), hoverinfo="skip", showlegend=False)
+    for tier in (max(1, storage_tier), shelf_max):  # rel bawah tier storage & rel paling atas, sbg siluet
+        for l in (l0, l1):
+            x, y = xy(c - w / 2, l); x2, y2 = xy(c + w / 2, l)
+            z = h_tier * tier
+            frame_x += [x, x2, None]; frame_y += [y, y2, None]; frame_z += [z, z, None]
 
-    return [garis(merah, "#d62828", 3), garis(hijau, "#00c853", 6), garis((tx, ty, tz), "#1f4fd8", 4)]
+    for tipe, warna in (("occ_storage", "#d62828"), ("occ_display", "#00a844")):
+        for rak, shelf, cell in occ[tipe]:
+            try:
+                rak_i, shelf_i, cell_i = int(rak) - 1, int(shelf) - 1, int(cell) - 1
+            except (ValueError, TypeError):
+                continue
+            if rak_i < 0 or shelf_i < 0 or cell_i < 0:
+                continue
+            rak_i = min(rak_i, rak_max - 1)
+            cell_i = cell_i % cell_max
+            depth_c = l0 + (rak_i + 0.5) * bay_pitch
+            lat_c = (c - w / 2) + (cell_i + 0.5) * slot_pitch
+            dh, lh = bay_pitch * 0.40, slot_pitch * 0.36
+            x0, y0 = xy(lat_c - lh, depth_c - dh); x1, y1 = xy(lat_c + lh, depth_c + dh)
+            z0 = h_tier * shelf_i
+            tambah_kotak_batch(batch, min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1), z0, z0 + h_tier * 0.8, warna)
 
 
 with tab5:
     if go is None:
         st.error("Library plotly belum terinstall. Di Terminal ketik: python -m pip install plotly, lalu jalankan ulang.")
         st.stop()
-    st.caption("Putar dengan mouse (klik-tahan), zoom dengan scroll. Balok merah = tingkat storage: SHELF 1-2, khusus Zona 06 SHELF 1-3. Balok hijau = tingkat display (picking) di atasnya, sesuai isi file CSV. Jumlah baris rak diambil dari jumlah LINE di data. "
-               "Posisi sudah disesuaikan dengan koreksi; ukuran Zona 12 dan 13 masih perkiraan.")
-    mode = st.radio("Warna blok", ["Warna asli zona", "Status waktu picking (data contoh)"], horizontal=True)
-    tinggi = display.groupby("ZONA")["SHELF"].max()
-    dpd_all, _ = buat_data_contoh()
-    rata_zona = dpd_all.groupby("ZONA")["DURASI"].mean()
+    st.caption(
+        "Putar dengan mouse (klik-tahan), zoom dengan scroll. Struktur rak mengikuti data asli: **RAK = kedalaman "
+        "ke belakang** (9 untuk zona fraction, 12 untuk zona bulky, sesuai data), **SHELF = tinggi**, **CELL = lebar "
+        "dalam satu rak** (dipisah jarak). Kotak **merah solid = tingkat storage terisi**, **hijau solid = tingkat "
+        "display/picking terisi** — kotak hanya muncul di lokasi yang benar-benar ada barangnya (PLU); rangka kosong "
+        "berarti lokasi itu kosong. Posisi Zona 12 dan 13 masih perkiraan."
+    )
+    occ_all = hitung_occupancy(display, storage)
+    jml_line = display.groupby("ZONA")["LINE"].unique()
+    jml_line_s = storage.groupby("ZONA")["LINE"].unique()
 
-    jml_line = display.groupby("ZONA")["LINE"].nunique()
-    fig = go.Figure()
+    batch = buat_batch_kotak()
+    frame_x, frame_y, frame_z = [], [], []
+    label_traces = []
+    h_total = 9 * 1.2  # skala sama seperti sebelumnya (9 tingkat x 1.2 unit)
+    h_tier = h_total / 9
+
     for nama, daftar_kotak in DENAH.items():
-        h = 9 * 12  # 9 tingkat rak
-        n_stor = 9 if nama == "Rak kosong" else (3 if nama == "Zona 06" else 2)  # jumlah tingkat storage dari bawah
-        info = f"{nama}: {JENIS_ZONA.get(nama, 'belum dipakai')}"
-        warna = WARNA_ZONA.get(nama, "#555555")
-        if mode.startswith("Status"):
-            if nama in rata_zona:
-                lewat = rata_zona[nama] > TARGET_DETIK
-                warna = "#e63946" if lewat else "#2ecc71"
-                info += f"<br>Rata-rata waktu {fmt(rata_zona[nama])} ({'LEWAT' if lewat else 'OK'} target)"
-            else:
-                warna = "#bbbbbb"
         label = nama[-2:] if nama.startswith("Zona") else "kosong"
+        daftar_line = sorted(set(jml_line.get(nama, [])) | set(jml_line_s.get(nama, [])))
+        if not daftar_line:
+            daftar_line = ["?"] * max(1, len(daftar_kotak) * 4)  # fallback: zona tanpa data LINE sungguhan
+        n_line = len(daftar_line)
+        li = 0
         for xa, xb, ya, yb in daftar_kotak:
-            # sumbu y dibalik supaya bagian atas gambar layout = bagian belakang di 3D
-            X0, X1, Y0, Y1 = xa / 10, xb / 10, (1130 - ya) / 10, (1130 - yb) / 10
-            n_rak = max(1, round(int(jml_line.get(nama, 4)) / len(daftar_kotak)))
-            fig.add_trace(kotak_3d(X0, X1, Y0, Y1, h / 10, warna, info, 0.12))  # volume transparan (warna zona + hover)
-            fig.add_trace(kotak_3d(X0, X1, Y0, Y1, 0.3, warna, info, 0.9))      # lantai berwarna
-            for tr in rangka_rak(X0, X1, Y0, Y1, h / 10, 9, n_rak, n_stor):
-                fig.add_trace(tr)
-            # label ditaruh tepat di permukaan atas blok
-            fig.add_trace(go.Scatter3d(
-                x=[(xa + xb) / 20], y=[(2260 - ya - yb) / 20], z=[h / 10 + 0.3], mode="text",
-                text=[label], textfont=dict(size=14, color="white"), hoverinfo="skip", showlegend=False,
-            ))
+            X0, X1 = xa / 10, xb / 10
+            Y0, Y1 = (1130 - ya) / 10, (1130 - yb) / 10
+            aZ = (X1 - X0) <= 4.0  # rak memanjang ke arah y kalau kotaknya sempit (lebar <= 4 unit)
+            y0, y1 = min(Y0, Y1), max(Y0, Y1)
+            s0, s1, l0, l1 = (X0, X1, y0, y1) if aZ else (y0, y1, X0, X1)
+            n_disini = max(1, round(n_line * (xb - xa) / sum(b - a for a, b, *_ in [(k[0], k[1]) for k in daftar_kotak])))
+            n_disini = max(1, n_line // len(daftar_kotak)) if len(daftar_kotak) > 1 else n_line
+            w = min(1.2, (s1 - s0) / max(n_disini, 1) * 0.72)
+            for k in range(n_disini):
+                if li >= n_line:
+                    break
+                ln = daftar_line[li]; li += 1
+                c = s0 + (k + 0.5) * (s1 - s0) / n_disini
+                if ln in occ_all:
+                    gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, nama, occ_all[ln])
+                else:
+                    # tidak ada data asli utk LINE ini: rangka datar polos saja, tanpa kotak terisi
+                    for tepi in (c - w / 2, c + w / 2):
+                        for l in (l0, l1):
+                            x, y = (tepi, l) if aZ else (l, tepi)
+                            frame_x += [x, x, None]; frame_y += [y, y, None]; frame_z += [0, h_total, None]
+            label_traces.append((nama[-2:] if nama.startswith("Zona") else "kosong",
+                                  (xa + xb) / 20, (2260 - ya - yb) / 20, h_total + 0.3))
+
+    fig = go.Figure()
+    mesh = mesh_dari_batch(batch)
+    if mesh is not None:
+        fig.add_trace(mesh)
+    fig.add_trace(go.Scatter3d(x=frame_x, y=frame_y, z=frame_z, mode="lines",
+                                line=dict(color="#1f4fd8", width=2.2), hoverinfo="skip", showlegend=False))
+    for lbl, lx, ly, lz in label_traces:
+        fig.add_trace(go.Scatter3d(x=[lx], y=[ly], z=[lz], mode="text", text=[lbl],
+                                    textfont=dict(size=13, color="#0f2a63"), hoverinfo="skip", showlegend=False))
     fig.update_layout(
-        height=520, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        height=560, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
         scene=dict(aspectmode="data", xaxis_visible=False, yaxis_visible=False, zaxis_visible=False,
                    camera=dict(eye=dict(x=0.0, y=-1.4, z=1.1))),
     )
     st.plotly_chart(fig, use_container_width=True)
+    total_slot = sum(len(o["occ_storage"]) + len(o["occ_display"]) for o in occ_all.values())
+    st.caption(f"Total {total_slot:,} slot terisi digambar sebagai kotak solid, dari {len(occ_all)} baris rak (LINE) di seluruh gudang.")
 
 
 # ---------- TAB 6: riwayat dan tren (data contoh) ----------
@@ -488,28 +563,45 @@ function label(txt,sub,color,x,y,z){
   g.fillStyle='#fff'; g.font='bold 64px Arial'; g.fillText(txt,34,76); g.font='34px Arial'; g.fillText(sub,34,126);
   const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c)})); s.scale.set(11,3.4,1); s.position.set(x,y,z); scene.add(s);
 }
+// Struktur rak mengikuti data asli: RAK=kedalaman, SHELF=tinggi, CELL=lebar (dengan jarak).
+// Kotak solid hanya digambar di slot yang benar-benar terisi (ada PLU); sisanya cuma rangka kosong.
 D.forEach((zn,zi)=>{
   zn.rects.forEach((r,ri)=>{
     const x0=r[0],x1=r[1],z0=r[2],z1=r[3],w=x1-x0,d=z1-z0;
     const p=new THREE.Mesh(new THREE.PlaneGeometry(w,d),new THREE.MeshLambertMaterial({color:zn.warna,transparent:true,opacity:.55}));
     p.rotation.x=-Math.PI/2; p.position.set((x0+x1)/2,0.02,(z0+z1)/2); scene.add(p);
-    const aZ=w<=40, n=Math.max(1,Math.round(zn.n/zn.rects.length));
+    const aZ=w<=4.0, n=Math.max(1, Math.round((zn.lines.length||1)/zn.rects.length));
     const s0=aZ?x0:z0, s1=aZ?x1:z1, l0=aZ?z0:x0, l1=aZ?z1:x1;
-    const rw=Math.min(1.2,(s1-s0)/n*0.6), len=l1-l0, bays=Math.max(1,Math.round(len/8)), bl=len/bays;
+    const rw=Math.min(1.2,(s1-s0)/n*0.72);
+    const mulai = ri*n;
     for(let i=0;i<n;i++){
       const c=s0+(i+.5)*(s1-s0)/n;
       solids.push(aZ?[c-rw/2,c+rw/2,l0,l1]:[l0,l1,c-rw/2,c+rw/2]);
+      const ln = zn.lines[mulai+i];
+      if(!ln){ // tidak ada data LINE asli: rangka datar polos
+        for(const e of [-1,1]){ const s=c+e*rw/2;
+          add(B.post, aZ?s:l0, RH/2, aZ?l0:s, 0.14,RH,0.14, 0);
+          add(B.post, aZ?s:l1, RH/2, aZ?l1:s, 0.14,RH,0.14, 0);
+        }
+        continue;
+      }
+      const bays=ln.rak, cells=ln.cell, bl=(l1-l0)/bays, cw=rw/cells;
       for(let b=0;b<=bays;b++) for(const e of [-1,1]){
         const l=l0+b*bl, s=c+e*rw/2; add(B.post, aZ?s:l, RH/2, aZ?l:s, 0.14,RH,0.14, 0);
       }
-      for(let k=1;k<=LV;k++){
-        const y=k*LH, list=(k<=zn.stor)?B.red:B.green, m=(l0+l1)/2;
-        for(const e of [-1,1]){ const s=c+e*rw/2; add(list, aZ?s:m, y, aZ?m:s, aZ?0.1:len, 0.16, aZ?len:0.1, 0); }
-        for(let b=0;b<bays;b++) if(Math.random()<0.75){
-          const l=l0+(b+.5)*bl;
-          add(B.carton, aZ?c:l, (k-1)*LH+0.55, aZ?l:c, aZ?rw*.85:bl*.8, 0.85, aZ?bl*.8:rw*.85, CART[(Math.random()*3)|0]);
-        }
+      for(let k=1;k<=LV;k++){ // 1 = tingkat paling bawah
+        const y=k*LH, m=(l0+l1)/2;
+        for(const e of [-1,1]){ const s=c+e*rw/2; add(B.post, aZ?s:m, y, aZ?m:s, aZ?0.1:(l1-l0), 0.1, aZ?(l1-l0):0.1, 0); }
       }
+      const taruh=(list,rak,shelf,cell)=>{
+        const rak_i=Math.min(Math.max(0,(rak|0)-1), bays-1), shelf_i=Math.max(0,(shelf|0)-1), cell_i=((cell|0)-1+cells*999)%cells;
+        if(shelf_i>=LV) return;
+        const depthC=l0+(rak_i+0.5)*bl, latC=(c-rw/2)+(cell_i+0.5)*cw;
+        const dh=bl*0.40, lh=cw*0.36, y0=(shelf_i)*LH;
+        add(list, aZ?latC:depthC, y0+LH*0.4, aZ?depthC:latC, aZ?lh*2:bl*0.8, LH*0.8, aZ?bl*0.8:lh*2, 0);
+      };
+      ln.os.forEach(t=>taruh(B.red, t[0], t[1], t[2]));
+      ln.od.forEach(t=>taruh(B.green, t[0], t[1], t[2]));
     }
     if(ri===0) label(zn.nama.toUpperCase(), zn.jenis, zn.warna, (x0+x1)/2, RH+3, (z0+z1)/2);
   });
@@ -597,13 +689,279 @@ with tab7:
     st.caption("Prototipe konsep: jalan keliling gudang seperti game. Laptop: klik gambar, seret mouse untuk melihat sekeliling, "
                "tombol W A S D untuk berjalan. HP: joystick di kiri bawah untuk berjalan, geser jari di sisi kanan untuk melihat. "
                "Pakai menu di kanan atas untuk lompat ke zona.")
-    jml_line_w = display.groupby("ZONA")["LINE"].nunique()
+    occ_all_w = hitung_occupancy(display, storage)
+    jml_line_w = display.groupby("ZONA")["LINE"].unique()
+    jml_line_ws = storage.groupby("ZONA")["LINE"].unique()
     data_zona = []
     for nama, kotak in DENAH.items():
+        daftar_line = sorted(set(jml_line_w.get(nama, [])) | set(jml_line_ws.get(nama, [])))
+        lines_detail = []
+        for ln in daftar_line:
+            o = occ_all_w.get(ln)
+            if o:
+                lines_detail.append({
+                    "rak": o["rak_max"], "shelf": o["shelf_max"], "stor": o["storage_tier"], "cell": o["cell_max"],
+                    "os": o["occ_storage"], "od": o["occ_display"],
+                })
         data_zona.append({
             "nama": nama, "jenis": JENIS_ZONA.get(nama, "Rak kosong"), "warna": WARNA_ZONA.get(nama, "#777777"),
             "rects": [[a / 10, b / 10, c / 10, d / 10] for a, b, c, d in kotak],
-            "n": int(jml_line_w.get(nama, 4)),
-            "stor": 9 if nama == "Rak kosong" else (3 if nama == "Zona 06" else 2),
+            "lines": lines_detail,
         })
     components.html(HTML_WALK.replace("__DATA__", json.dumps(data_zona)), height=620)
+
+
+# ---------- TAB 8: Performance Warehouse (DATA ASLI, Agustus 2026) ----------
+@st.cache_data
+def muat_performance_wh():
+    harian = pd.read_csv("performance_harian.csv", parse_dates=["tanggal"])
+    sl_zona = pd.read_csv("sl_per_zona.csv", parse_dates=["tanggal"])
+    tp_zona = pd.read_csv("time_pick_per_zona.csv", parse_dates=["tanggal"])
+    nkl_zona = pd.read_csv("nkl_per_zona.csv")
+    rusak_zona = pd.read_csv("rusak_per_zona.csv")
+    tren_rusak = pd.read_csv("tren_rusak.csv", parse_dates=["tanggal"])
+    harian["nkl_persen"] = harian["nkl"] / harian["npb"] * 100
+    harian["nbr_persen"] = harian["nbr"] / harian["npb"] * 100
+    # Beberapa baris berisi teks seperti "OFF" (toko tutup/libur) bercampur dengan angka;
+    # ubah jadi angka, baris yang bukan angka jadi kosong (NaN) dan otomatis diabaikan saat dihitung.
+    sl_zona["sl_persen"] = pd.to_numeric(sl_zona["sl_persen"], errors="coerce")
+    tp_zona["waktu_detik"] = pd.to_numeric(tp_zona["waktu_detik"], errors="coerce")
+    return harian, sl_zona, tp_zona, nkl_zona, rusak_zona, tren_rusak
+
+
+with tab8:
+    try:
+        harian, sl_zona, tp_zona, nkl_zona, rusak_zona, tren_rusak = muat_performance_wh()
+    except FileNotFoundError as e:
+        st.error(f"File tidak ditemukan: {e.filename}. Taruh ke-6 file CSV performance_*/sl_*/time_pick_*/nkl_*/rusak_*/tren_* satu folder dengan app.py.")
+        st.stop()
+
+    if go is None:
+        st.error("Library plotly belum terinstall (cek requirements.txt).")
+        st.stop()
+
+    BULAN_NAMA = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus",
+                  "September", "Oktober", "November", "Desember"]
+    BULAN_IDX_ASLI = 8  # Agustus
+
+    @st.cache_data
+    def buat_bulan_contoh(bulan_idx):
+        """Data contoh untuk bulan selain Agustus, skalanya dikalibrasi dari rata-rata data asli Agustus."""
+        rng = np.random.default_rng(2026_00 + bulan_idx)
+        start = pd.Timestamp(year=2026, month=bulan_idx, day=1)
+        tanggal = pd.date_range(start, start + pd.offsets.MonthEnd(0), freq="D")
+        n = len(tanggal)
+        base_tp, base_sl = harian["time_pick_detik"].mean(), harian["sl"].mean()
+        base_npb, base_toko = harian["npb"].mean(), harian["toko"].mean()
+        tren = (bulan_idx - BULAN_IDX_ASLI) * -1.2  # asumsi membaik sedikit menjelang akhir tahun
+        weekend = tanggal.weekday >= 5
+        toko = np.clip(rng.normal(base_toko, 6, n), 215, 265) * np.where(weekend, 0.92, 1)
+        npb = np.clip(rng.normal(base_npb, base_npb * 0.07, n), base_npb * 0.5, None)
+        time_pick = np.clip(rng.normal(base_tp + tren, 24, n), 140, 260)
+        sl = np.clip(rng.normal(base_sl, 0.6, n), 92, 100)
+        nkl = rng.normal(0, 4_800_000, n)
+        nbr = np.clip(rng.normal(300_000, 190_000, n), 0, None)
+        df = pd.DataFrame({"tanggal": tanggal, "toko": toko.round(), "npb": npb,
+                            "time_pick_detik": time_pick, "sl": sl, "nkl": nkl, "nbr": nbr})
+        df["nkl_persen"] = df["nkl"] / df["npb"] * 100
+        df["nbr_persen"] = df["nbr"] / df["npb"] * 100
+        return df
+
+    opsi_bulan = ["Tren Sepanjang 2026 (semua bulan)"] + [f"{b} 2026" for b in BULAN_NAMA]
+    pilih_bulan = st.selectbox("Tampilkan", opsi_bulan, index=0)
+
+    # ===================== MODE: TREN SEPANJANG 2026 (semua bulan) =====================
+    if pilih_bulan == opsi_bulan[0]:
+        st.info("🟢 Agustus = **data asli** dari Excel adm reporting. Bulan lain = **data contoh** (skala mengikuti pola Agustus), untuk melihat gambaran tren sepanjang tahun sambil menunggu data bulan lain yang sesungguhnya.")
+        ring = []
+        for i, nama in enumerate(BULAN_NAMA, start=1):
+            d = harian if i == BULAN_IDX_ASLI else buat_bulan_contoh(i)
+            ring.append({"bulan": nama, "idx": i, "avg_tp": d["time_pick_detik"].mean(), "avg_sl": d["sl"].mean(),
+                         "total_nkl": d["nkl"].sum(), "total_nbr": d["nbr"].sum(), "asli": i == BULAN_IDX_ASLI})
+        ring = pd.DataFrame(ring)
+        warna = ["#2e9e5b" if a else "#b8c0d6" for a in ring["asli"]]
+
+        k1, k2 = st.columns(2)
+        with k1:
+            f1 = go.Figure(go.Bar(x=ring["bulan"], y=ring["avg_tp"], marker_color=warna,
+                                   hovertemplate="%{x}: %{y:.0f} detik<extra></extra>"))
+            f1.add_hline(y=105, line_dash="dash", line_color="#d62828", annotation_text="Target 1:45")
+            f1.update_layout(title="Rata-rata Time Pick / Toko per Bulan (detik)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(f1, use_container_width=True)
+        with k2:
+            f2 = go.Figure(go.Bar(x=ring["bulan"], y=ring["avg_sl"], marker_color=warna,
+                                   hovertemplate="%{x}: %{y:.2f}%<extra></extra>"))
+            f2.add_hline(y=98, line_dash="dash", line_color="#d62828", annotation_text="Target >98%")
+            f2.update_layout(title="Rata-rata Service Level per Bulan (%)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(f2, use_container_width=True)
+
+        k3, k4 = st.columns(2)
+        with k3:
+            f3 = go.Figure(go.Bar(x=ring["bulan"], y=ring["total_nkl"], marker_color=warna,
+                                   hovertemplate="%{x}: Rp %{y:,.0f}<extra></extra>"))
+            f3.update_layout(title="Total NKL per Bulan (Rp)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(f3, use_container_width=True)
+        with k4:
+            f4 = go.Figure(go.Bar(x=ring["bulan"], y=ring["total_nbr"], marker_color=warna,
+                                   hovertemplate="%{x}: Rp %{y:,.0f}<extra></extra>"))
+            f4.update_layout(title="Total NBR / Barang Rusak per Bulan (Rp)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(f4, use_container_width=True)
+        st.caption("🟢 hijau = data asli (Agustus) · abu-abu = data contoh (bulan lain)")
+
+    # ===================== MODE: DETAIL SATU BULAN =====================
+    else:
+        bulan_idx = opsi_bulan.index(pilih_bulan)  # index di opsi_bulan == nomor bulan (opsi[0] sudah terpakai utk "semua bulan")
+        asli = bulan_idx == BULAN_IDX_ASLI
+        df_bulan = harian if asli else buat_bulan_contoh(bulan_idx)
+        if asli:
+            st.success("DATA ASLI dari Excel Monitoring DC Agustus 2026 (adm reporting).")
+        else:
+            st.warning(f"DATA CONTOH untuk {pilih_bulan} — belum ada file asli bulan ini, skala mengikuti pola Agustus.")
+
+        daftar_tanggal = df_bulan["tanggal"].sort_values().dt.strftime("%d %b %Y").tolist()
+        mode_tgl = st.radio("Tampilan", ["Semua Tanggal (rekap bulan ini)", "Per Tanggal"], horizontal=True, key=f"mode_{bulan_idx}")
+        tgl_pilih = st.select_slider("Pilih tanggal", options=daftar_tanggal, value=daftar_tanggal[-1], key=f"tgl_{bulan_idx}") \
+            if mode_tgl == "Per Tanggal" else None
+
+        # --- rekap bulan ---
+        if tgl_pilih is None:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Avg Time Pick / Toko", fmt(df_bulan["time_pick_detik"].mean()))
+            c2.metric("Service Level rata-rata", f"{df_bulan['sl'].mean():.2f}%")
+            c3.metric("NKL (Barang Hilang)", f"Rp {df_bulan['nkl'].sum():,.0f}")
+            c4.metric("NBR (Barang Rusak)", f"Rp {df_bulan['nbr'].sum():,.0f}")
+
+            st.subheader(f"Tren Harian — {pilih_bulan}")
+            k1, k2 = st.columns(2)
+            with k1:
+                f1 = go.Figure(go.Scatter(x=df_bulan["tanggal"], y=df_bulan["time_pick_detik"], mode="lines+markers",
+                                           line=dict(color="#3b6fe0", width=3), hovertemplate="%{x|%d %b}: %{y:.0f} detik<extra></extra>"))
+                f1.add_hline(y=105, line_dash="dash", line_color="#d62828", annotation_text="Target 1:45")
+                f1.update_layout(title="Avg Time Pick / Toko (detik)", height=300, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f1, use_container_width=True)
+            with k2:
+                f2 = go.Figure(go.Scatter(x=df_bulan["tanggal"], y=df_bulan["sl"], mode="lines+markers",
+                                           line=dict(color="#2e9e5b", width=3), hovertemplate="%{x|%d %b}: %{y:.2f}%<extra></extra>"))
+                f2.add_hline(y=98, line_dash="dash", line_color="#d62828", annotation_text="Target >98%")
+                f2.update_layout(title="Service Level Picking (%)", height=300, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f2, use_container_width=True)
+
+            k3, k4 = st.columns(2)
+            with k3:
+                if asli:
+                    f3 = go.Figure(go.Bar(x=tren_rusak["tanggal"], y=tren_rusak["rusak_all"], marker_color="#c4201f",
+                                           hovertemplate="%{x|%d %b}: Rp %{y:,.0f}<extra></extra>"))
+                else:
+                    f3 = go.Figure(go.Bar(x=df_bulan["tanggal"], y=df_bulan["nbr"], marker_color="#c4201f",
+                                           hovertemplate="%{x|%d %b}: Rp %{y:,.0f}<extra></extra>"))
+                f3.update_layout(title="Nilai Barang Rusak Harian (Rp)", height=300, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f3, use_container_width=True)
+            with k4:
+                f4 = go.Figure(go.Scatter(x=df_bulan["tanggal"], y=df_bulan["nkl"], mode="lines+markers",
+                                           line=dict(color="#f2b705", width=3), hovertemplate="%{x|%d %b}: Rp %{y:,.0f}<extra></extra>"))
+                f4.add_hline(y=0, line_color="#8690a6")
+                f4.update_layout(title="NKL Harian (Rp, minus = kehilangan)", height=300, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f4, use_container_width=True)
+
+            if asli:
+                with st.expander("Catatan kualitas data (perlu dikonfirmasi ke adm reporting)"):
+                    st.markdown(
+                        "- **NKL per zona** bersumber dari sheet berjudul periode **Juli 2026**, sedangkan sheet lain berjudul Agustus 2026.\n"
+                        "- **Zona '0'** pada data barang rusak per zona tidak match dengan daftar Zona 1-15.\n"
+                        "- Istilah **NBR** diasumsikan = Nilai Barang Rusak, **PSP** = produktivitas pick & scan. Mohon dikoreksi jika keliru.\n"
+                        "- Satu formula di sheet REKAP2 menghasilkan `#REF!` — tidak dipakai di dashboard ini."
+                    )
+                st.subheader("Performance per Zona (rata-rata bulan ini)")
+                z1, z2 = st.columns(2)
+                with z1:
+                    sl_rank = sl_zona.groupby("zona")["sl_persen"].mean().sort_values()
+                    f5 = go.Figure(go.Bar(x=sl_rank.values, y=sl_rank.index, orientation="h", marker_color="#2e9e5b",
+                                           hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
+                    f5.add_vline(x=98, line_dash="dash", line_color="#d62828")
+                    f5.update_layout(title="Service Level per Zona (%) — terendah di atas", height=460, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(f5, use_container_width=True)
+                with z2:
+                    tp_rank = tp_zona.groupby("zona")["waktu_detik"].mean().sort_values(ascending=False)
+                    f6 = go.Figure(go.Bar(x=tp_rank.values, y=tp_rank.index, orientation="h", marker_color="#3b6fe0",
+                                           hovertemplate="%{y}: %{x:.0f} detik<extra></extra>"))
+                    f6.update_layout(title="Rata-rata Waktu Pick per Zona (detik) — terlambat di atas", height=460, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(f6, use_container_width=True)
+
+                z3, z4 = st.columns(2)
+                with z3:
+                    nz = nkl_zona.sort_values("nkl_total")
+                    f7 = go.Figure(go.Bar(x=nz["nkl_total"], y="Zona " + nz["zona"].astype(str), orientation="h",
+                                           marker_color=["#d62828" if v < 0 else "#2e9e5b" for v in nz["nkl_total"]],
+                                           hovertemplate="%{y}: Rp %{x:,.0f}<extra></extra>"))
+                    f7.update_layout(title="NKL per Zona (Rp) — periode Juli*", height=420, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(f7, use_container_width=True)
+                    st.caption("*Lihat catatan kualitas data di atas: sheet sumber berjudul Juli 2026.")
+                with z4:
+                    rz = rusak_zona[rusak_zona["zona"] != "0"].sort_values("rusak_total")
+                    f8 = go.Figure(go.Bar(x=rz["rusak_total"], y="Zona " + rz["zona"].astype(str), orientation="h", marker_color="#c4201f",
+                                           hovertemplate="%{y}: Rp %{x:,.0f}<extra></extra>"))
+                    f8.update_layout(title="Nilai Barang Rusak per Zona (Rp)", height=420, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(f8, use_container_width=True)
+            else:
+                st.caption("Detail per zona baru tersedia untuk Agustus 2026 (data asli). Bulan lain belum punya breakdown per zona.")
+
+        # --- per tanggal ---
+        else:
+            tgl_ts = pd.to_datetime(tgl_pilih, format="%d %b %Y")
+            b = df_bulan[df_bulan["tanggal"] == tgl_ts].iloc[0]
+            st.caption(f"Menampilkan data **{tgl_pilih}** saja.")
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Jumlah Toko", f"{int(b['toko'])}")
+            c2.metric("Avg Time Pick", fmt(b["time_pick_detik"]))
+            c3.metric("Service Level", f"{b['sl']:.2f}%")
+            c4.metric("NKL Hari Ini", f"Rp {b['nkl']:,.0f}")
+            c5.metric("NBR Hari Ini", f"Rp {b['nbr']:,.0f}")
+
+            zona_aktif15 = [f"ZONA {i:02d}" for i in range(1, 16)]
+            rng = np.random.default_rng(abs(hash((pilih_bulan, tgl_pilih))) % (2**32))
+            if asli:
+                sl_hari = sl_zona[sl_zona["tanggal"] == tgl_ts].dropna(subset=["sl_persen"]).sort_values("sl_persen")
+                tp_hari = tp_zona[tp_zona["tanggal"] == tgl_ts].dropna(subset=["waktu_detik"]).sort_values("waktu_detik", ascending=False)
+            else:
+                sl_hari = pd.DataFrame({"zona": zona_aktif15, "sl_persen": np.clip(rng.normal(b["sl"], 1.2, 15), 85, 100)}).sort_values("sl_persen")
+                tp_hari = pd.DataFrame({"zona": zona_aktif15, "waktu_detik": np.clip(rng.normal(b["time_pick_detik"], 20, 15), 100, 300)}).sort_values("waktu_detik", ascending=False)
+
+            st.subheader(f"Performance per Zona — {tgl_pilih}")
+            z1, z2 = st.columns(2)
+            with z1:
+                warna_sl = ["#d62828" if v < 98 else "#2e9e5b" for v in sl_hari["sl_persen"]]
+                f9 = go.Figure(go.Bar(x=sl_hari["sl_persen"], y=sl_hari["zona"], orientation="h", marker_color=warna_sl,
+                                       hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
+                f9.add_vline(x=98, line_dash="dash", line_color="#8690a6")
+                f9.update_layout(title="Service Level per Zona (%)", height=460, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f9, use_container_width=True)
+                if sl_hari.empty:
+                    st.caption("Tidak ada data zona untuk tanggal ini (kemungkinan hari libur/toko tutup).")
+            with z2:
+                f10 = go.Figure(go.Bar(x=tp_hari["waktu_detik"], y=tp_hari["zona"], orientation="h", marker_color="#3b6fe0",
+                                        hovertemplate="%{y}: %{x:.0f} detik<extra></extra>"))
+                f10.update_layout(title="Waktu Pick per Zona (detik)", height=460, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f10, use_container_width=True)
+
+            st.warning(
+                "DATA CONTOH: sebaran NKL dan barang rusak PER ZONA per hari di bawah ini masih perkiraan "
+                "(dibagi rata secara acak dari total hari itu), karena master data yang ada baru rekap per bulan, "
+                "belum per hari per zona." + (" Totalnya (kartu NKL/NBR di atas) tetap data asli." if asli else "")
+            )
+            bobot = rng.dirichlet(np.ones(15))
+            contoh_nkl = pd.DataFrame({"zona": zona_aktif15, "nilai": b["nkl"] * bobot}).sort_values("nilai")
+            bobot2 = rng.dirichlet(np.ones(15))
+            contoh_nbr = pd.DataFrame({"zona": zona_aktif15, "nilai": b["nbr"] * bobot2}).sort_values("nilai")
+            z3, z4 = st.columns(2)
+            with z3:
+                f11 = go.Figure(go.Bar(x=contoh_nkl["nilai"], y=contoh_nkl["zona"], orientation="h",
+                                        marker_color=["#d62828" if v < 0 else "#2e9e5b" for v in contoh_nkl["nilai"]],
+                                        hovertemplate="%{y}: Rp %{x:,.0f}<extra></extra>"))
+                f11.update_layout(title="NKL per Zona (contoh sebaran)", height=420, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f11, use_container_width=True)
+            with z4:
+                f12 = go.Figure(go.Bar(x=contoh_nbr["nilai"], y=contoh_nbr["zona"], orientation="h", marker_color="#c4201f",
+                                        hovertemplate="%{y}: Rp %{x:,.0f}<extra></extra>"))
+                f12.update_layout(title="Barang Rusak per Zona (contoh sebaran)", height=420, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(f12, use_container_width=True)
