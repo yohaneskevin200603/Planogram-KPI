@@ -313,8 +313,10 @@ def mesh_dari_batch(batch):
                       facecolor=batch["facecolor"], flatshading=True, hoverinfo="skip", showlegend=False)
 
 
-def gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, info_tiang, occ):
-    """Gambar satu baris rak (satu LINE) sedetail mungkin: kedalaman=RAK, tinggi=SHELF, lebar=CELL (dengan jarak)."""
+def gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, info_tiang, occ, tiang_set):
+    """Gambar satu baris rak (satu LINE) sedetail mungkin: kedalaman=RAK, tinggi=SHELF, lebar=CELL (dengan jarak).
+    tiang_set dipakai supaya tiang di batas antara dua LINE yang bersebelahan tidak digambar dua kali (dedup),
+    persis jumlah tiang pembagi antar rak di gudang asli (rak_max + 1 per baris rak, bukan dobel)."""
     rak_max, shelf_max, storage_tier, cell_max = occ["rak_max"], occ["shelf_max"], occ["storage_tier"], occ["cell_max"]
     bay_pitch = (l1 - l0) / rak_max
     slot_pitch = w / cell_max
@@ -322,10 +324,14 @@ def gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tie
     def xy(s, l):
         return (s, l) if aZ else (l, s)
 
-    # rangka tiang di tiap batas bay, supaya terlihat jelas slot yang masih kosong
+    # rangka tiang di tiap batas bay (rak_max + 1 posisi), supaya terlihat jelas slot yang masih kosong
     tiang_l = np.linspace(l0, l1, rak_max + 1)
     for tepi in (c - w / 2, c + w / 2):
         for l in tiang_l:
+            kunci = (round(tepi, 2), round(l, 2))
+            if kunci in tiang_set:
+                continue  # sudah digambar oleh LINE sebelahnya di batas yang sama
+            tiang_set.add(kunci)
             x, y = xy(tepi, l)
             frame_x += [x, x, None]; frame_y += [y, y, None]; frame_z += [0, h_tier * 9, None]
 
@@ -381,13 +387,13 @@ with tab5:
             daftar_line = ["?"] * max(1, len(daftar_kotak) * 4)  # fallback: zona tanpa data LINE sungguhan
         n_line = len(daftar_line)
         li = 0
+        tiang_set = set()  # satu zona = satu set dedup, supaya tiang di batas antar-LINE tidak digambar dobel
         for xa, xb, ya, yb in daftar_kotak:
             X0, X1 = xa / 10, xb / 10
             Y0, Y1 = (1130 - ya) / 10, (1130 - yb) / 10
             aZ = (X1 - X0) <= 4.0  # rak memanjang ke arah y kalau kotaknya sempit (lebar <= 4 unit)
             y0, y1 = min(Y0, Y1), max(Y0, Y1)
             s0, s1, l0, l1 = (X0, X1, y0, y1) if aZ else (y0, y1, X0, X1)
-            n_disini = max(1, round(n_line * (xb - xa) / sum(b - a for a, b, *_ in [(k[0], k[1]) for k in daftar_kotak])))
             n_disini = max(1, n_line // len(daftar_kotak)) if len(daftar_kotak) > 1 else n_line
             w = min(1.2, (s1 - s0) / max(n_disini, 1) * 0.72)
             for k in range(n_disini):
@@ -396,7 +402,7 @@ with tab5:
                 ln = daftar_line[li]; li += 1
                 c = s0 + (k + 0.5) * (s1 - s0) / n_disini
                 if ln in occ_all:
-                    gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, nama, occ_all[ln])
+                    gambar_line_detail(batch, frame_x, frame_y, frame_z, c, w, l0, l1, aZ, h_tier, nama, occ_all[ln], tiang_set)
                 else:
                     # tidak ada data asli utk LINE ini: rangka datar polos saja, tanpa kotak terisi
                     for tepi in (c - w / 2, c + w / 2):
@@ -566,6 +572,12 @@ function label(txt,sub,color,x,y,z){
 // Struktur rak mengikuti data asli: RAK=kedalaman, SHELF=tinggi, CELL=lebar (dengan jarak).
 // Kotak solid hanya digambar di slot yang benar-benar terisi (ada PLU); sisanya cuma rangka kosong.
 D.forEach((zn,zi)=>{
+  const tiangSet=new Set(); // dedup: tiang di batas antar-LINE bersebelahan jangan digambar dobel
+  const tiang=(s,l,aZ)=>{
+    const key=(aZ?'Z':'X')+Math.round(s*50)+'_'+Math.round(l*50);
+    if(tiangSet.has(key)) return; tiangSet.add(key);
+    add(B.post, aZ?s:l, RH/2, aZ?l:s, 0.14,RH,0.14, 0);
+  };
   zn.rects.forEach((r,ri)=>{
     const x0=r[0],x1=r[1],z0=r[2],z1=r[3],w=x1-x0,d=z1-z0;
     const p=new THREE.Mesh(new THREE.PlaneGeometry(w,d),new THREE.MeshLambertMaterial({color:zn.warna,transparent:true,opacity:.55}));
@@ -578,19 +590,18 @@ D.forEach((zn,zi)=>{
       const c=s0+(i+.5)*(s1-s0)/n;
       solids.push(aZ?[c-rw/2,c+rw/2,l0,l1]:[l0,l1,c-rw/2,c+rw/2]);
       const ln = zn.lines[mulai+i];
-      if(!ln){ // tidak ada data LINE asli: rangka datar polos
-        for(const e of [-1,1]){ const s=c+e*rw/2;
-          add(B.post, aZ?s:l0, RH/2, aZ?l0:s, 0.14,RH,0.14, 0);
-          add(B.post, aZ?s:l1, RH/2, aZ?l1:s, 0.14,RH,0.14, 0);
-        }
+      if(!ln){ // tidak ada data LINE asli: rangka datar polos (cuma 2 tiang depan-belakang)
+        for(const e of [-1,1]){ const s=c+e*rw/2; tiang(s,l0,aZ); tiang(s,l1,aZ); }
         continue;
       }
       const bays=ln.rak, cells=ln.cell, bl=(l1-l0)/bays, cw=rw/cells;
       for(let b=0;b<=bays;b++) for(const e of [-1,1]){
-        const l=l0+b*bl, s=c+e*rw/2; add(B.post, aZ?s:l, RH/2, aZ?l:s, 0.14,RH,0.14, 0);
+        tiang(c+e*rw/2, l0+b*bl, aZ); // rak_max+1 tiang per baris rak (dedup di batas antar-LINE)
       }
-      for(let k=1;k<=LV;k++){ // 1 = tingkat paling bawah
-        const y=k*LH, m=(l0+l1)/2;
+      // rel referensi cuma di 2 tingkat (batas tier storage & paling atas), BUKAN di tiap 9 tingkat —
+      // supaya tiang vertikal (rak_max+1) tetap yang paling menonjol, bukan tertimbun rel horizontal
+      for(const kTier of [Math.max(1, ln.stor), ln.shelf]){
+        const y=kTier*LH, m=(l0+l1)/2;
         for(const e of [-1,1]){ const s=c+e*rw/2; add(B.post, aZ?s:m, y, aZ?m:s, aZ?0.1:(l1-l0), 0.1, aZ?(l1-l0):0.1, 0); }
       }
       const taruh=(list,rak,shelf,cell)=>{
