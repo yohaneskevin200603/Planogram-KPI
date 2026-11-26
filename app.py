@@ -144,6 +144,40 @@ with tab3:
     st.subheader("Jumlah lokasi terisi per ZONA")
     st.bar_chart(display_terisi.groupby("ZONA").size())
 
+    st.divider()
+    st.subheader("Kapasitas Storage: Terisi vs Kosong")
+    st.caption("Dihitung dari baris lokasi di Planogram_Storage.csv — tiap baris mewakili satu slot nyata (RAK/SHELF/CELL/SUBCELL), terisi kalau ada PLU.")
+    cap = storage.groupby("ZONA").agg(total=("PLU", "size"), terisi=("PLU", "count"))
+    cap["kosong"] = cap["total"] - cap["terisi"]
+    cap["persen_kosong"] = (cap["kosong"] / cap["total"] * 100).round(1)
+    cap = cap[cap.index != "Belum dipetakan"].sort_values("kosong", ascending=False)
+
+    total_all, terisi_all = int(cap["total"].sum()), int(cap["terisi"].sum())
+    kosong_all = total_all - terisi_all
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Total slot storage", f"{total_all:,}")
+    s2.metric("Terisi", f"{terisi_all:,}", f"{terisi_all/total_all*100:.1f}%")
+    s3.metric("Kosong", f"{kosong_all:,}", f"{kosong_all/total_all*100:.1f}%", delta_color="inverse")
+    s4.metric("Zona paling banyak kosong", cap.index[0] if len(cap) else "-",
+              f"{int(cap['kosong'].iloc[0]):,} slot" if len(cap) else "")
+
+    if go is not None:
+        kk1, kk2 = st.columns(2)
+        with kk1:
+            fkk = go.Figure(go.Bar(x=cap["kosong"], y=cap.index, orientation="h", marker_color="#8690a6",
+                                    hovertemplate="%{y}: %{x:,} slot kosong<extra></extra>"))
+            fkk.update_layout(title="Jumlah Slot Kosong per Zona", height=420, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fkk, use_container_width=True)
+        with kk2:
+            fkp = go.Figure(go.Bar(x=cap["persen_kosong"], y=cap.index, orientation="h", marker_color="#f2b705",
+                                    hovertemplate="%{y}: %{x:.1f}%% kosong<extra></extra>"))
+            fkp.update_layout(title="Persentase Kosong per Zona (%)", height=420, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fkp, use_container_width=True)
+    else:
+        st.bar_chart(cap["kosong"])
+    with st.expander("Lihat tabel lengkap per zona"):
+        st.dataframe(cap[["total", "terisi", "kosong", "persen_kosong"]], use_container_width=True)
+
 # ---------- DATA CONTOH PICKING (nanti diganti data asli dari support) ----------
 TARGET_DETIK = 105   # 1 menit 45 detik per DPD (1 toko di 1 zona)
 TARGET_TOKO = 250    # target toko per hari
@@ -428,7 +462,8 @@ with tab5:
     )
     st.plotly_chart(fig, use_container_width=True)
     total_slot = sum(len(o["occ_storage"]) + len(o["occ_display"]) for o in occ_all.values())
-    st.caption(f"Total {total_slot:,} slot terisi digambar sebagai kotak solid, dari {len(occ_all)} baris rak (LINE) di seluruh gudang.")
+    st.caption(f"Total {total_slot:,} slot terisi digambar sebagai kotak solid, dari {len(occ_all)} baris rak (LINE) di seluruh gudang. "
+               "Ringkasan jumlah slot kosong per zona ada di tab **Ringkasan**.")
 
 
 # ---------- TAB 6: riwayat dan tren (data contoh) ----------
